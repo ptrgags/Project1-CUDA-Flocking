@@ -48,7 +48,7 @@ void checkCUDAError(const char *msg, int line = -1) {
 #define rule3Distance 5.0f
 
 #define rule1Scale 0.01f
-#define rule2Scale 0.1f;
+#define rule2Scale 0.1f
 #define rule3Scale 0.1f
 
 #define maxSpeed 1.0f
@@ -238,6 +238,9 @@ __device__ glm::vec3 computeVelocityChange(int N, int iSelf, const glm::vec3 *po
   glm::vec3 perceivedCenter = glm::vec3(0.0);
   glm::vec3 perceivedSeparation = glm::vec3(0.0);
   glm::vec3 perceivedVelocity = glm::vec3(0.0);
+
+  int cohesionNeighbors = 0;
+  int alignmentNeighbors = 0;
   for (int i = 0; i < N; i++) {
     if (i == iSelf) {
       continue;
@@ -250,6 +253,7 @@ __device__ glm::vec3 computeVelocityChange(int N, int iSelf, const glm::vec3 *po
     // Rule 1 (cohesion): boids fly towards their local perceived center of mass, which excludes themselves
     if (dist < rule1Distance) {
       perceivedCenter += neighborPosition;
+      cohesionNeighbors++;
     }
 
     // Rule 2 (separation): boids try to stay a distance d away from each other
@@ -261,18 +265,27 @@ __device__ glm::vec3 computeVelocityChange(int N, int iSelf, const glm::vec3 *po
     if (dist < rule3Distance) {
       glm::vec3 neighborVelocity = vel[i];
       perceivedVelocity += neighborVelocity;
+      alignmentNeighbors++;
     }
   }
 
   // compute averages
-  int numberOfNeighbors = N - 1;
-  perceivedCenter /= numberOfNeighbors;
-  perceivedVelocity /= numberOfNeighbors;
+  perceivedCenter /= cohesionNeighbors;
+  perceivedVelocity /= alignmentNeighbors;
 
   // Compute the acceleration from each rule
   glm::vec3 cohesion = (perceivedCenter - position) * rule1Scale;
   glm::vec3 separation = perceivedSeparation * rule2Scale;
   glm::vec3 alignment = perceivedVelocity * rule3Scale;
+
+  // if there are no nearby boids, turn off relevant components
+  if (cohesionNeighbors == 0) {
+    cohesion = glm::vec3(0.0);
+  }
+  if (alignmentNeighbors == 0) {
+    alignment = glm::vec3(0.0);
+  }
+
   return cohesion + separation + alignment;
 }
 
