@@ -48,7 +48,7 @@ void checkCUDAError(const char *msg, int line = -1) {
 #define rule3Distance 5.0f
 
 #define rule1Scale 0.01f
-#define rule2Scale 0.1f
+#define rule2Scale 0.1f;
 #define rule3Scale 0.1f
 
 #define maxSpeed 1.0f
@@ -232,10 +232,48 @@ void Boids::copyBoidsToVBO(float *vbodptr_positions, float *vbodptr_velocities) 
 * in the `pos` and `vel` arrays.
 */
 __device__ glm::vec3 computeVelocityChange(int N, int iSelf, const glm::vec3 *pos, const glm::vec3 *vel) {
-  // Rule 1: boids fly towards their local perceived center of mass, which excludes themselves
-  // Rule 2: boids try to stay a distance d away from each other
-  // Rule 3: boids try to match the speed of surrounding boids
-  return glm::vec3(1.0f, 2.0f, 0.0f);
+  glm::vec3 position = pos[iSelf];
+
+  // I'm combining the three rules into one loop to avoid duplicate memory accesses
+  glm::vec3 perceivedCenter = glm::vec3(0.0);
+  glm::vec3 perceivedSeparation = glm::vec3(0.0);
+  glm::vec3 perceivedVelocity = glm::vec3(0.0);
+  for (int i = 0; i < N; i++) {
+    if (i == iSelf) {
+      continue;
+    }
+
+    // All three rules use these variables
+    glm::vec3 neighborPosition = pos[i];
+    float dist = glm::distance(position, neighborPosition);
+
+    // Rule 1 (cohesion): boids fly towards their local perceived center of mass, which excludes themselves
+    if (dist < rule1Distance) {
+      perceivedCenter += neighborPosition;
+    }
+
+    // Rule 2 (separation): boids try to stay a distance d away from each other
+    if (dist < rule2Distance) {
+      perceivedSeparation -= neighborPosition - position;
+    }
+
+    // Rule 3 (alignment): boids try to match the velocity of surrounding boids
+    if (dist < rule3Distance) {
+      glm::vec3 neighborVelocity = vel[i];
+      perceivedVelocity += neighborVelocity;
+    }
+  }
+
+  // compute averages
+  int numberOfNeighbors = N - 1;
+  perceivedCenter /= numberOfNeighbors;
+  perceivedVelocity /= numberOfNeighbors;
+
+  // Compute the acceleration from each rule
+  glm::vec3 cohesion = (perceivedCenter - position) * rule1Scale;
+  glm::vec3 separation = perceivedSeparation * rule2Scale;
+  glm::vec3 alignment = perceivedVelocity * rule3Scale;
+  return cohesion + separation + alignment;
 }
 
 /**
@@ -245,8 +283,9 @@ __device__ glm::vec3 computeVelocityChange(int N, int iSelf, const glm::vec3 *po
 __global__ void kernUpdateVelocityBruteForce(int N, glm::vec3 *pos,
   glm::vec3 *vel1, glm::vec3 *vel2) {
   // Compute a new velocity based on pos and vel1
-  int self = 0;
-  glm::vec3 velocity = computeVelocityChange(N, self, pos, vel1);
+  int index = (blockIdx.x * blockDim.x) + threadIdx.x;
+  glm::vec3 acceleration = computeVelocityChange(N, index, pos, vel1);
+  glm::vec3 velocity = vel1[index] + acceleration;
 
   // Clamp the speed
   float speed = glm::length(velocity);
@@ -257,7 +296,7 @@ __global__ void kernUpdateVelocityBruteForce(int N, glm::vec3 *pos,
   // Answer: if we wrote the results back to vel1, then other threads
   // that execute later will attempt to read the old value but get the
   // new value instead. This is the reason for the buffer ping-pong.
-  int index = (blockIdx.x * blockDim.x) + threadIdx.x;
+  
   if (index < N) {
     vel2[index] = velocity;
   }
