@@ -3,6 +3,8 @@
 #include <cuda.h>
 #include <cmath>
 #include <glm/glm.hpp>
+// This prevents warnings about the CUDA block/thread indices
+#include <device_launch_parameters.h>
 #include "utilityCore.hpp"
 #include "kernel.h"
 
@@ -233,7 +235,7 @@ __device__ glm::vec3 computeVelocityChange(int N, int iSelf, const glm::vec3 *po
   // Rule 1: boids fly towards their local perceived center of mass, which excludes themselves
   // Rule 2: boids try to stay a distance d away from each other
   // Rule 3: boids try to match the speed of surrounding boids
-  return glm::vec3(0.0f, 0.0f, 0.0f);
+  return glm::vec3(1.0f, 2.0f, 0.0f);
 }
 
 /**
@@ -243,8 +245,22 @@ __device__ glm::vec3 computeVelocityChange(int N, int iSelf, const glm::vec3 *po
 __global__ void kernUpdateVelocityBruteForce(int N, glm::vec3 *pos,
   glm::vec3 *vel1, glm::vec3 *vel2) {
   // Compute a new velocity based on pos and vel1
+  int self = 0;
+  glm::vec3 velocity = computeVelocityChange(N, self, pos, vel1);
+
   // Clamp the speed
+  float speed = glm::length(velocity);
+  float clampedSpeed = glm::min(speed, maxSpeed);
+  velocity *= (clampedSpeed / speed);
+
   // Record the new velocity into vel2. Question: why NOT vel1?
+  // Answer: if we wrote the results back to vel1, then other threads
+  // that execute later will attempt to read the old value but get the
+  // new value instead. This is the reason for the buffer ping-pong.
+  int index = (blockIdx.x * blockDim.x) + threadIdx.x;
+  if (index < N) {
+    vel2[index] = velocity;
+  }
 }
 
 /**
@@ -348,7 +364,14 @@ __global__ void kernUpdateVelNeighborSearchCoherent(
 */
 void Boids::stepSimulationNaive(float dt) {
   // TODO-1.2 - use the kernels you wrote to step the simulation forward in time.
+  dim3 fullBlocksPerGrid((numObjects + blockSize - 1) / blockSize);
+  kernUpdateVelocityBruteForce<<<fullBlocksPerGrid, blockSize>>>(numObjects, dev_pos, dev_vel1, dev_vel2);
+  kernUpdatePos<<<fullBlocksPerGrid, blockSize>>>(numObjects, dt, dev_pos, dev_vel1);
+
   // TODO-1.2 ping-pong the velocity buffers
+  glm::vec3* tmp = dev_vel1;
+  dev_vel1 = dev_vel2;
+  dev_vel2 = tmp;
 }
 
 void Boids::stepSimulationScatteredGrid(float dt) {
